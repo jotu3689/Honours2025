@@ -1,0 +1,70 @@
+---
+title: "rda"
+author: "Joshua Tu"
+date: "2025-10-08"
+output: html_document
+---
+library(readxl)
+library(dplyr)
+library(vegan)
+library(ggplot2)
+library(ggrepel)
+
+# Load and prepare data
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+df <- read_excel(path, sheet = "All Data") %>%
+  transmute(
+    Sample = as.character(Sample),
+    Site = as.character(Location),
+    Gene = tolower(Gene),
+    CT = suppressWarnings(as.numeric(CT)),
+    temp_c = suppressWarnings(as.numeric(Temp)),
+    sal_ppt = suppressWarnings(as.numeric(Salinity))
+  ) %>%
+  mutate(pos = is.finite(CT) & CT <= 40) %>%
+  filter(is.finite(temp_c), is.finite(sal_ppt)) %>%
+  group_by(Sample, Site) %>%
+  summarise(
+    temp_c = first(temp_c), sal_ppt = first(sal_ppt),
+    tlh = any(Gene == "tlh" & pos), tdh = any(Gene == "tdh" & pos), trh = any(Gene == "trh" & pos),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pathotype = case_when(tdh & trh ~ "TDH+TRH+", tdh ~ "TDH+", trh ~ "TRH+", TRUE ~ "TLH-only"),
+    Site = factor(Site)
+  )
+
+# RDA
+Y <- model.matrix(~ pathotype - 1, df) %>% decostand(method = "hellinger")
+rda_model <- rda(Y ~ temp_c + sal_ppt, data = df)
+
+# Stats
+overall <- anova.cca(rda_model, permutations = 999)
+terms <- anova.cca(rda_model, by = "terms", permutations = 999)
+r2 <- RsquareAdj(rda_model)
+
+cat(sprintf("RDA: F = %.2f, p = %.3f, R² = %.3f\n", overall$F[1], overall$`Pr(>F)`[1], r2$r.squared))
+cat(sprintf("Temperature: F = %.2f, p = %.3f\n", terms$F[1], terms$`Pr(>F)`[1]))
+cat(sprintf("Salinity: F = %.2f, p = %.3f\n", terms$F[2], terms$`Pr(>F)`[2]))
+
+# Plot
+sc <- scores(rda_model, scaling = 2)
+sites <- data.frame(sc$sites, Site = df$Site)
+species <- data.frame(sc$species, Pathotype = rownames(sc$species))
+arrows <- data.frame(sc$biplot, Variable = c("Temperature (°C)", "Salinity (ppt)"))
+arrow_mul <- ordiArrowMul(sc$biplot)
+
+p <- ggplot() +
+  geom_point(data = sites, aes(RDA1, RDA2, color = Site), size = 2, alpha = 0.7) +
+  geom_segment(data = arrows, aes(x = 0, y = 0, xend = RDA1*arrow_mul, yend = RDA2*arrow_mul),
+               arrow = arrow(length = unit(0.2, "cm")), linewidth = 1) +
+  geom_text_repel(data = arrows, aes(RDA1*arrow_mul, RDA2*arrow_mul, label = Variable), 
+                  fontface = "bold", seed = 42) +
+  geom_point(data = species, aes(RDA1, RDA2), shape = 21, fill = "white", size = 3, stroke = 1) +
+  geom_text_repel(data = species, aes(RDA1, RDA2, label = Pathotype), 
+                  fontface = "bold", seed = 42) +
+  labs(x = "RDA1", y = "RDA2") +
+  theme_classic(base_size = 12) +
+  coord_cartesian(clip = "off")
+  
+p

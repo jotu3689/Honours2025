@@ -1,0 +1,101 @@
+---
+title: "gene copies per estuary"
+author: "Joshua Tu"
+date: "2025-10-08"
+output: html_document
+---
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+df   <- read_excel(path, sheet = "All Data")
+
+ct_pos_threshold <- 40
+cols <- c(TLH = "#d62728", TDH = "#2ca02c", TRH = "#1f77b4")
+est_order <- c("Merimbula","Clyde","Port","Wallis","Manning")
+
+# Choose Column
+col_exists <- function(nm) nm %in% names(df)
+gene_copies_col <- if (col_exists("Gene Copies")) "Gene Copies" else "Quantity"
+location_col    <- if (col_exists("Location")) "Location" else "Estuary"
+
+# Clean
+d <- df %>%
+  transmute(
+    Location = factor(.data[[location_col]], levels = est_order),
+    Gene     = factor(toupper(Gene), levels = c("TLH","TDH","TRH")),
+    CT       = suppressWarnings(as.numeric(CT)),
+    copies   = suppressWarnings(as.numeric(gsub(",", "", .data[[gene_copies_col]])))
+  ) %>%
+  mutate(
+    pos = is.finite(CT) & CT <= ct_pos_threshold,
+    log10_copies = ifelse(is.finite(copies) & copies > 0, log10(copies), NA_real_)
+  ) %>%
+  filter(Gene %in% c("TLH","TDH","TRH"), pos, is.finite(log10_copies))
+
+# KRUSKAL-WALLIS TESTS
+
+cat("\nKruskal-Wallis Tests:\n\n")
+
+# Test 1: Estuaries (by gene)
+cat("Test 1 - Across estuaries:\n")
+for (g in c("TLH", "TDH", "TRH")) {
+  kw <- kruskal.test(log10_copies ~ Location, data = d %>% filter(Gene == g))
+  sig <- ifelse(kw$p.value < 0.001, "***", ifelse(kw$p.value < 0.01, "**", 
+                ifelse(kw$p.value < 0.05, "*", "ns")))
+  cat(sprintf("  %s: H = %.2f, df = %d, p = %.4f %s\n", g, kw$statistic, kw$parameter, kw$p.value, sig))
+}
+
+# Test 2: Genes (overall)
+cat("\nTest 2 - Between genes:\n")
+kw_genes <- kruskal.test(log10_copies ~ Gene, data = d)
+sig <- ifelse(kw_genes$p.value < 0.001, "***", ifelse(kw_genes$p.value < 0.01, "**", 
+              ifelse(kw_genes$p.value < 0.05, "*", "ns")))
+cat(sprintf("  H = %.2f, df = %d, p < 0.001 %s\n", kw_genes$statistic, kw_genes$parameter, sig))
+
+# Pairwise comparisons
+cat("  Pairwise (Bonferroni-adjusted):\n")
+for (pair in list(c("TLH","TDH"), c("TLH","TRH"), c("TDH","TRH"))) {
+  w <- wilcox.test(d %>% filter(Gene == pair[1]) %>% pull(log10_copies),
+                   d %>% filter(Gene == pair[2]) %>% pull(log10_copies))
+  p_adj <- min(w$p.value * 3, 1)
+  sig <- ifelse(p_adj < 0.001, "***", ifelse(p_adj < 0.01, "**", 
+                ifelse(p_adj < 0.05, "*", "ns")))
+  cat(sprintf("    %s vs %s: p < 0.001 %s\n", pair[1], pair[2], sig))
+}
+
+cat("\n")
+
+# Summary table
+tab_long <- d %>%
+  group_by(Location, Gene) %>%
+  summarise(
+    n_pos = n(),
+    median_copies = median(copies, na.rm = TRUE),
+    q1 = quantile(copies, 0.25, na.rm = TRUE),
+    q3 = quantile(copies, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    `Median copies` = format(round(median_copies, 0), big.mark = ","),
+    Q1 = format(round(q1, 0), big.mark = ","),
+    Q3 = format(round(q3, 0), big.mark = ",")
+  ) %>%
+  select(Location, Gene, n_pos, `Median copies`, Q1, Q3)
+
+print(tab_long)
+
+
+# PLOT
+p <- ggplot(d, aes(x = Gene, y = log10_copies, fill = Gene)) +
+  geom_boxplot(width = 0.6, alpha = 0.9, color = "black", outlier.alpha = 0.25) +
+  facet_wrap(~ Location, ncol = 3, drop = FALSE) +
+  scale_fill_manual(values = cols, guide = "none") +
+  labs(x = NULL, y = expression(log[10]*" gene copies per pool")) +
+  theme_classic(base_size = 14) +
+  theme(strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))
+
+p

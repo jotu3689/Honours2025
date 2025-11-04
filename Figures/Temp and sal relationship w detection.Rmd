@@ -1,0 +1,165 @@
+---
+title: "Untitled"
+author: "Joshua Tu"
+date: "2025-10-29"
+output: html_document
+---
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+
+# Load data
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+df <- read_excel(path, sheet = "All Data")
+ct_thr <- 40
+
+# Calculate estuary-specific temperature baselines
+baselines <- df %>%
+  transmute(Location = Location, temp_c = as.numeric(Temp)) %>%
+  filter(is.finite(temp_c)) %>%
+  group_by(Location) %>%
+  summarise(mean_temp = mean(temp_c), .groups = "drop")
+
+# Sample-level data with temperature anomalies
+dat <- df %>%
+  transmute(Sample = Sample, Location = Location, Gene = tolower(Gene),
+            CT = as.numeric(CT), temp_c = as.numeric(Temp), sal_psu = as.numeric(Salinity)) %>%
+  filter(is.finite(temp_c), is.finite(sal_psu)) %>%
+  left_join(baselines, by = "Location") %>%
+  mutate(temp_anomaly = temp_c - mean_temp,
+         pos = is.finite(CT) & CT <= ct_thr) %>%
+  group_by(Sample) %>%
+  summarise(temp_c = first(temp_c), temp_anomaly = first(temp_anomaly),
+            sal_psu = first(sal_psu),
+            tlh_pos = as.integer(any(Gene == "tlh" & pos)),
+            path_pos = as.integer(any(Gene %in% c("tdh","trh") & pos)), .groups = "drop")
+
+# Fit GLMs with linear terms 
+models <- list(
+  temp_abs_tlh = glm(tlh_pos ~ temp_c, data = dat, family = binomial),
+  temp_anom_tlh = glm(tlh_pos ~ temp_anomaly, data = dat, family = binomial),
+  temp_abs_path = glm(path_pos ~ temp_c, data = dat, family = binomial),
+  temp_anom_path = glm(path_pos ~ temp_anomaly, data = dat, family = binomial),
+  sal_abs_tlh = glm(tlh_pos ~ sal_psu, data = dat, family = binomial),
+  sal_abs_path = glm(path_pos ~ sal_psu, data = dat, family = binomial)
+)
+
+# Extract model performance metrics
+aic_temp_abs_tlh <- AIC(models$temp_abs_tlh)
+aic_temp_anom_tlh <- AIC(models$temp_anom_tlh)
+aic_temp_abs_path <- AIC(models$temp_abs_path)
+aic_temp_anom_path <- AIC(models$temp_anom_path)
+aic_sal_abs_tlh <- AIC(models$sal_abs_tlh)
+aic_sal_abs_path <- AIC(models$sal_abs_path)
+
+# Calculate Tjur's R2 for each model
+tjur_r2 <- function(model) {
+  fitted_probs <- fitted(model)
+  actual <- model$y
+  mean(fitted_probs[actual == 1]) - mean(fitted_probs[actual == 0])
+}
+
+r2_temp_abs_tlh <- tjur_r2(models$temp_abs_tlh)
+r2_temp_anom_tlh <- tjur_r2(models$temp_anom_tlh)
+r2_temp_abs_path <- tjur_r2(models$temp_abs_path)
+r2_temp_anom_path <- tjur_r2(models$temp_anom_path)
+r2_sal_abs_tlh <- tjur_r2(models$sal_abs_tlh)
+r2_sal_abs_path <- tjur_r2(models$sal_abs_path)
+
+# Calculate ORs and 95% CIs from linear models
+or_ci <- function(model, var_name) {
+  coef_summary <- summary(model)$coefficients
+  beta <- coef_summary[var_name, "Estimate"]
+  se <- coef_summary[var_name, "Std. Error"]
+  or <- exp(beta)
+  ci_lower <- exp(beta - 1.96 * se)
+  ci_upper <- exp(beta + 1.96 * se)
+  return(list(or = or, ci_lower = ci_lower, ci_upper = ci_upper))
+}
+
+temp_tlh_or <- or_ci(models$temp_abs_tlh, "temp_c")
+temp_anom_tlh_or <- or_ci(models$temp_anom_tlh, "temp_anomaly")
+temp_path_or <- or_ci(models$temp_abs_path, "temp_c")
+temp_anom_path_or <- or_ci(models$temp_anom_path, "temp_anomaly")
+sal_tlh_or <- or_ci(models$sal_abs_tlh, "sal_psu")
+sal_path_or <- or_ci(models$sal_abs_path, "sal_psu")
+
+# Model comparison via AIC
+cat("\nModel Comparison (AIC - lower is better):\n\nTEMPERATURE:\n")
+cat(sprintf("  TLH:        Absolute = %.1f  |  Anomaly = %.1f  |  Winner: %s\n",
+            aic_temp_abs_tlh, aic_temp_anom_tlh,
+            ifelse(aic_temp_abs_tlh < aic_temp_anom_tlh, "Absolute", "Anomaly")))
+cat(sprintf("  TDH/TRH:    Absolute = %.1f  |  Anomaly = %.1f  |  Winner: %s\n\n",
+            aic_temp_abs_path, aic_temp_anom_path,
+            ifelse(aic_temp_abs_path < aic_temp_anom_path, "Absolute", "Anomaly")))
+cat("SALINITY:\n")
+cat(sprintf("  TLH:        Absolute = %.1f\n", aic_sal_abs_tlh))
+cat(sprintf("  TDH/TRH:    Absolute = %.1f\n\n", aic_sal_abs_path))
+
+cat("Model Performance (Tjur's R²):\n")
+cat("  Temperature:\n")
+cat(sprintf("    TLH (absolute):        R² = %.2f\n", r2_temp_abs_tlh))
+cat(sprintf("    TLH (anomaly):         R² = %.2f\n", r2_temp_anom_tlh))
+cat(sprintf("    TDH/TRH (absolute):    R² = %.2f\n", r2_temp_abs_path))
+cat(sprintf("    TDH/TRH (anomaly):     R² = %.2f\n", r2_temp_anom_path))
+cat("  Salinity:\n")
+cat(sprintf("    TLH (absolute):        R² = %.2f\n", r2_sal_abs_tlh))
+cat(sprintf("    TDH/TRH (absolute):    R² = %.2f\n\n", r2_sal_abs_path))
+
+cat("Odds Ratios (OR per unit increase with 95% CI):\n")
+cat("  Temperature:\n")
+cat(sprintf("    TLH (absolute):        OR = %.2f per 1°C (95%% CI: %.2f-%.2f)\n", 
+            temp_tlh_or$or, temp_tlh_or$ci_lower, temp_tlh_or$ci_upper))
+cat(sprintf("    TLH (anomaly):         OR = %.2f per 1°C (95%% CI: %.2f-%.2f)\n", 
+            temp_anom_tlh_or$or, temp_anom_tlh_or$ci_lower, temp_anom_tlh_or$ci_upper))
+cat(sprintf("    TDH/TRH (absolute):    OR = %.2f per 1°C (95%% CI: %.2f-%.2f)\n", 
+            temp_path_or$or, temp_path_or$ci_lower, temp_path_or$ci_upper))
+cat(sprintf("    TDH/TRH (anomaly):     OR = %.2f per 1°C (95%% CI: %.2f-%.2f)\n", 
+            temp_anom_path_or$or, temp_anom_path_or$ci_lower, temp_anom_path_or$ci_upper))
+cat("  Salinity:\n")
+cat(sprintf("    TLH (absolute):        OR = %.2f per 1 ppt (95%% CI: %.2f-%.2f)\n", 
+            sal_tlh_or$or, sal_tlh_or$ci_lower, sal_tlh_or$ci_upper))
+cat(sprintf("    TDH/TRH (absolute):    OR = %.2f per 1 ppt (95%% CI: %.2f-%.2f)\n\n", 
+            sal_path_or$or, sal_path_or$ci_lower, sal_path_or$ci_upper))
+
+# Visualization
+cols <- c(`TLH` = "#d62728", `TDH/TRH` = "#6A51A3")
+
+make_plot <- function(x_var, x_lab, add_vline = FALSE) {
+  ggplot() +
+    geom_jitter(data = dat, aes(.data[[x_var]], tlh_pos), height = 0.03, alpha = 0.25, 
+                color = cols["TLH"], size = 1.2) +
+    geom_smooth(data = dat, aes(.data[[x_var]], tlh_pos), method = "glm",
+                method.args = list(family = binomial()), formula = y ~ x,
+                se = TRUE, linewidth = 1.2, color = cols["TLH"]) +
+    geom_jitter(data = dat, aes(.data[[x_var]], path_pos), height = 0.03, alpha = 0.25,
+                color = cols["TDH/TRH"], size = 1.2) +
+    geom_smooth(data = dat, aes(.data[[x_var]], path_pos), method = "glm",
+                method.args = list(family = binomial()), formula = y ~ x,
+                se = TRUE, linewidth = 1.2, color = cols["TDH/TRH"]) +
+    {if(add_vline) geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5)} +
+    scale_y_continuous("Probability detected", limits = c(0,1), breaks = seq(0,1,0.25),
+                       labels = scales::percent_format(accuracy = 1)) +
+    scale_x_continuous(x_lab) + theme_classic(base_size = 12)
+}
+
+pA <- make_plot("temp_c", "Water temperature (°C)")
+pB <- make_plot("temp_anomaly", "Temperature anomaly (°C from estuary mean)", TRUE)
+pC <- make_plot("sal_psu", "Salinity (ppt)")
+
+legend_obj <- get_legend(
+  ggplot() + geom_point(aes(1,1, colour = "TLH")) +
+    geom_point(aes(1,1, colour = "TDH/TRH")) +
+    scale_colour_manual(name = "Outcome", values = cols,
+                        breaks = c("TDH/TRH", "TLH")) +
+    theme_void() + theme(legend.position = "right")
+)
+
+plot_grid(
+  plot_grid(pA + theme(legend.position = "none"), pB + theme(legend.position = "none"),
+            pC + theme(legend.position = "none"),
+            ncol = 1, labels = c("(A)", "(B)", "(C)"), label_size = 14),
+  legend_obj, ncol = 2, rel_widths = c(1, 0.18)
+)

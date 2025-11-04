@@ -1,0 +1,58 @@
+---
+title: "Gene Copy Pooled"
+author: "Joshua Tu"
+date: "2025-10-07"
+output: html_document
+---
+
+library(readxl)
+library(ggplot2)
+
+# Load data
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+df <- read_excel(path, sheet = "All Data")
+
+# Settings
+ct_pos_threshold <- 40
+cols <- c(TLH = "#d62728", TDH = "#2ca02c", TRH = "#1f77b4")
+
+# Convert CT to numeric
+df$CT <- suppressWarnings(as.numeric(df$CT))
+
+# Find gene copies column
+column_names_lower <- tolower(names(df))
+gene_copies_index <- grep("^\\s*gene\\s*copies\\s*$", column_names_lower)
+if (length(gene_copies_index) == 0) {
+  stop("Couldn't find a 'gene copies' column. Available columns are:\n",
+       paste(names(df), collapse = ", "))
+}
+gene_copies_column <- names(df)[gene_copies_index[1]]
+
+# Convert gene copies to log10
+gene_copies_raw <- as.character(df[[gene_copies_column]])
+gene_copies_numeric <- suppressWarnings(as.numeric(gsub(",", "", gene_copies_raw)))
+df$log10_copies <- ifelse(is.finite(gene_copies_numeric) & gene_copies_numeric > 0, 
+                          log10(gene_copies_numeric), NA_real_)
+
+# Filter to positive samples
+keep_genes <- c("tlh", "tdh", "trh")
+positive_samples <- subset(df,
+                          tolower(Gene) %in% keep_genes &
+                          is.finite(CT) & CT <= ct_pos_threshold &
+                          is.finite(log10_copies))
+
+# Format gene names
+positive_samples$Gene <- factor(toupper(positive_samples$Gene), levels = c("TLH", "TDH", "TRH"))
+
+# Plot
+p <- ggplot(positive_samples, aes(x = Gene, y = log10_copies, fill = Gene)) +
+  geom_boxplot(width = 0.6, alpha = 0.85, color = "black", outlier.alpha = 0.35) +
+  scale_fill_manual(values = cols, guide = "none") +
+  labs(x = "Target gene", y = expression(log[10]*" gene copies")) +
+  theme_classic(base_size = 16) +
+  theme(
+    axis.text = element_text(color = "grey20"),
+    axis.title = element_text(color = "grey20", face = "bold")
+  )
+
+p

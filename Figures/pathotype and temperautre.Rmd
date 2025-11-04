@@ -1,0 +1,84 @@
+---
+title: "patho and temperature"
+author: "Joshua Tu"
+date: "2025-10-08"
+output: html_document
+---
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+df   <- read_excel(path, sheet = "All Data")
+
+ct_pos_threshold <- 40
+cols_path <- c("TDH+TRH+"="#C77CFF", "TDH+"="#00BA38", "TRH+"="#619CFF", "TLH-only"="#F8766D")
+
+# Tidy
+d <- df %>%
+  transmute(
+    Sample   = as.character(Sample),
+    Gene     = tolower(Gene),
+    CT       = suppressWarnings(as.numeric(CT)),
+    Temp     = suppressWarnings(as.numeric(Temp))
+  ) %>%
+  filter(!is.na(Sample), is.finite(Temp))
+  
+# Pos
+is_pos <- function(ct) is.finite(ct) & ct <= ct_pos_threshold
+d_pos <- d %>%
+  mutate(pos = is_pos(CT)) %>%
+  select(Sample, Gene, Temp, pos)
+by_sample <- d_pos %>%
+  group_by(Sample) %>%
+  summarise(
+    Temp      = first(Temp),
+    tlh_pos   = any(Gene == "tlh" & pos, na.rm = TRUE),
+    tdh_pos   = any(Gene == "tdh" & pos, na.rm = TRUE),
+    trh_pos   = any(Gene == "trh" & pos, na.rm = TRUE),
+    .groups = "drop"
+  )
+# Keep only TLH-positive samples (pathotype among positives)
+by_sample <- by_sample %>% filter(tlh_pos)
+
+# Assign pathotype
+by_sample <- by_sample %>%
+  mutate(Pathotype = case_when(
+    tdh_pos & trh_pos             ~ "TDH+TRH+",
+    tdh_pos & !trh_pos            ~ "TDH+",
+    !tdh_pos & trh_pos            ~ "TRH+",
+    TRUE                          ~ "TLH-only"
+  ))
+  
+# Temp
+by_sample <- by_sample %>%
+  mutate(temp_bin = floor(Temp))
+  
+# Proportions
+bin_props <- by_sample %>%
+  count(temp_bin, Pathotype) %>%
+  group_by(temp_bin) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup() %>%
+  mutate(
+    Pathotype = factor(Pathotype, levels = c("TDH+TRH+","TDH+","TRH+","TLH-only")),
+    temp_bin_f = factor(temp_bin, levels = sort(unique(temp_bin)))
+  )
+
+# Plot
+p <- ggplot(bin_props, aes(x = temp_bin_f, y = prop, fill = Pathotype)) +
+  geom_col(width = 0.95, color = NA) +
+  scale_fill_manual(values = cols_path, name = "Pathotype") +
+  scale_y_continuous(labels = percent_format(accuracy = 1), expand = c(0,0)) +
+  labs(x = "Water temperature (°C, binned by 1°C)",
+       y = "Proportion of samples") +
+  theme_classic(base_size = 13) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 0, vjust = 0.9),
+    legend.position = "right"
+  )
+
+p

@@ -1,0 +1,78 @@
+---
+title: "Pathogenic Burden"
+author: "Joshua Tu"
+date: "2025-10-21"
+output: html_document
+---
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+
+# Load
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+raw <- read_excel(path, sheet = "All Data")
+
+# Clean
+dat <- raw %>%
+  mutate(
+    date = suppressWarnings(as.Date(as.character(Date), format = "%d.%m.%Y")) %>%
+           coalesce(ymd(as.character(Date))),        
+    gene = toupper(trimws(Gene))
+  )
+
+# Compute log10 copies 
+if ("log10_copies" %in% names(dat)) {
+  dat$log10_copies <- as.numeric(dat$log10_copies)
+} else if ("Quantity" %in% names(dat)) {
+  dat$log10_copies <- suppressWarnings(log10(as.numeric(dat$Quantity)))
+} else {
+  stop("Need either a 'log10_copies' column or a numeric 'Quantity' column.")
+}
+
+# Filter for TDH and TRH
+plot_df <- dat %>%
+  filter(gene %in% c("TDH", "TRH"), !is.na(date), is.finite(log10_copies))
+
+# Create month-year labels for cleaner x-axis
+plot_df <- plot_df %>%
+  mutate(
+    month_year = format(date, "%b-%y"),  # e.g., "Jun-22"
+    month_date = floor_date(date, "month")  # First day of each month for grouping
+  )
+
+# Order by actual date
+unique_months <- plot_df %>%
+  arrange(month_date) %>%
+  distinct(month_year, month_date) %>%
+  pull(month_year)
+
+plot_df <- plot_df %>%
+  mutate(month_year = factor(month_year, levels = unique_months))
+
+# Colors
+cols <- c(TDH = "#2ca02c", TRH = "#1f77b4")
+
+# OPTION 1: Boxplot with trend lines (recommended)
+p <- ggplot(plot_df, aes(x = month_year, y = log10_copies, fill = gene)) +
+  geom_boxplot(position = position_dodge(width = 0.8),
+               width = 0.6, outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(aes(colour = gene),
+              position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+              alpha = 0.3, size = 1.5, show.legend = FALSE) +
+  # Add smooth trend line
+  geom_smooth(aes(x = as.numeric(month_year), y = log10_copies, colour = gene),
+              method = "loess", se = FALSE, linewidth = 1, linetype = "dashed") +
+  scale_fill_manual(values = cols, name = "Gene") +
+  scale_colour_manual(values = cols) +
+  labs(x = "Sampling Month", 
+       y = expression(Log[10]~"gene copies per composite")) +
+  theme_classic(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    legend.position = "right",
+    legend.title = element_text(face = "bold")
+  )
+
+p
+

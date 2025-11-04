@@ -1,0 +1,102 @@
+---
+title: "pathotype by estuary"
+author: "Joshua Tu"
+date: "2025-10-08"
+output: html_document
+---
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+df   <- read_excel(path, sheet = "All Data")
+
+ct_pos_threshold <- 40
+is_pos <- function(ct, thr = ct_pos_threshold) is.finite(ct) & as.numeric(ct) <= thr
+
+# location column
+loc_col <- c("Location")
+loc_col <- loc_col[loc_col %in% names(df)][1]
+if (is.na(loc_col)) stop("No estuary/location column found in the sheet.")
+
+# one result per sample x gene
+mini <- df %>%
+  mutate(
+    Gene = tolower(Gene),
+    CT   = suppressWarnings(as.numeric(CT)),
+    pos  = is_pos(CT)
+  ) %>%
+  filter(Gene %in% c("tlh","tdh","trh")) %>%
+  group_by(Sample, !!sym(loc_col), Gene) %>%
+  summarise(pos = any(pos, na.rm = TRUE), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = Gene, values_from = pos, values_fill = FALSE) %>%
+  rename(Estuary = !!sym(loc_col))
+
+# define pathotypes
+typed <- mini %>%
+  mutate(
+    pathotype = dplyr::case_when(
+      tlh &  tdh &  trh ~ "tdh+trh+",
+      tlh &  tdh & !trh ~ "tdh+",
+      tlh & !tdh &  trh ~ "trh+",
+      tlh & !tdh & !trh ~ "tlh-only",
+      TRUE               ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(pathotype))
+
+# Set factor order for estuaries (south to north)
+estuary_order <- c("Merimbula", "Clyde", "Port", "Wallis", "Manning")
+typed$Estuary <- factor(typed$Estuary, levels = estuary_order)
+
+# Chi Square Test
+contingency_table <- table(typed$Estuary, typed$pathotype)
+chi_test <- chisq.test(contingency_table)
+
+cat(sprintf("\nChi-square test: X² = %.2f, df = %d, p < 0.001 ***\n\n", 
+            chi_test$statistic, chi_test$parameter))
+
+
+# proportions for plotting
+comp <- typed %>%
+  count(Estuary, pathotype, name = "k") %>%
+  group_by(Estuary) %>%
+  mutate(n_tlh_pos = sum(k),
+         p = k / n_tlh_pos,
+         lab = ifelse(p >= 0.01, sprintf("%d%%", round(100*p)), "")) %>%
+  ungroup()
+
+# Set factor order for pathotypes (most to least pathogenic)
+comp$Estuary <- factor(comp$Estuary, levels = estuary_order)
+comp$pathotype <- factor(
+  comp$pathotype,
+  levels = c("tdh+trh+", "tdh+", "trh+", "tlh-only")
+)
+
+# colors
+cols_path <- c("tlh-only" = "#F8766D",
+               "trh+"     = "#619CFF",
+               "tdh+"     = "#00BA38",
+               "tdh+trh+" = "#C77CFF")
+
+# Plot
+p <- ggplot(comp, aes(Estuary, p, fill = pathotype)) +
+  geom_col(position = "fill", width = 0.75) +
+  geom_text(aes(label = lab),
+            position = position_fill(vjust = 0.5),
+            colour = "white", size = 3.6) +
+  scale_fill_manual(
+    values = cols_path,
+    breaks = c("tdh+trh+","tdh+","trh+","tlh-only"),
+    labels = c("TDH+TRH+","TDH+","TRH+","TLH-only"),
+    name   = "Pathotype"
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Location", y = "Proportion of samples") +
+  theme_classic(base_size = 12)
+
+p
+

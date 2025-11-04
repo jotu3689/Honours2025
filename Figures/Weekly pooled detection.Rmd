@@ -1,0 +1,95 @@
+---
+title: "Weekly pooled detection and pathogenic abundance"
+author: "Joshua Tu"
+date: "2025-10-07"
+output: html_document
+---
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+dat  <- readxl::read_excel(path, sheet = "All Data")
+
+# Prep date
+dat <- dat %>%
+  mutate(
+    date = as.Date(Date, format = "%d.%m.%Y"),
+    gene = toupper(tolower(Gene)),
+    pos  = as.logical(Present)
+  )
+  
+# Weekly % pos
+weekly <- dat %>%
+  filter(gene %in% c("TLH","TDH","TRH")) %>%
+  mutate(week = floor_date(date, unit = "week", week_start = 1)) %>%
+  group_by(week, gene) %>%
+  summarise(k = sum(pos, na.rm = TRUE), n = n(), .groups = "drop") %>%
+  mutate(p = k / n)
+  
+# cols 
+cols <- c(TLH = "#d62728", TDH = "#2ca02c", TRH = "#1f77b4")
+
+# Plot 
+ggplot(weekly, aes(week, p, colour = gene)) +
+  geom_point(size = 1.8, alpha = 0.9) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.35, linewidth = 1.1) +
+  scale_color_manual(values = cols, name = "Gene") +
+  scale_y_continuous(name = "% Positivie", labels = percent_format(accuracy = 1), limits = c(0, 1)) +
+  scale_x_date(
+  date_breaks = "2 months",      
+  date_minor_breaks = "1 month", 
+  date_labels = "%b %y",         
+  expand = expansion(mult = c(0.01, 0.02))
+) +
+labs(x = "Month")+
+  theme_classic(base_size = 12)
+
+---
+# Pathogenic potency
+# Weekly mean of log10 copies per gene
+wk_mean_log <- patho_log %>%
+  group_by(Gene, week) %>%
+  summarise(mean_log = mean(log10_copies), n_pos = dplyr::n(), .groups = "drop") %>%
+  filter(n_pos >= 1) %>%        
+  arrange(Gene, week)
+
+# Create segment IDs that break
+gap_days <- 31
+wk_seg <- wk_mean_log %>%
+  group_by(Gene) %>%
+  mutate(
+    gap   = as.numeric(week - dplyr::lag(week)),
+    seg   = cumsum(dplyr::coalesce(gap > gap_days, TRUE))   # first point starts a segment
+  ) %>%
+  ungroup()
+
+# Plot
+cols2 <- c(TDH = "#2ca02c", TRH = "#1f77b4")
+
+p <- ggplot(weekly, aes(week, p, colour = gene)) +
+  geom_point(alpha = 0.25, size = 1.5, show.legend = FALSE) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.35, linewidth = 1.1) +
+  scale_color_manual(values = cols, name = "Gene") +
+  scale_y_continuous(
+    name = "% Positive",
+    labels = scales::percent_format(accuracy = 1),
+    limits = c(0, 1)
+  ) +
+  scale_x_date(
+    date_breaks = "2 months",
+    date_minor_breaks = "1 month",
+    date_labels = "%b %y",
+    expand = expansion(mult = c(0.01, 0.02))
+  ) +
+  labs(x = "Month") +
+  theme_classic(base_size = 12) +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 10)
+  )
+  
+p

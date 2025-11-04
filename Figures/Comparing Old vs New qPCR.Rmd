@@ -1,0 +1,60 @@
+---
+title: "Comparing Old vs New qPCR"
+author: "Joshua Tu"
+date: "2025-10-07"
+output: html_document
+---
+
+library(readxl)
+library(ggplot2)
+
+# Load data
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+df <- read_excel(path, sheet = "All Data")
+
+# Keep genes of interest and clean CT data
+keep_genes <- c("tlh", "tdh")
+df2 <- df[df$Gene %in% keep_genes &
+            is.finite(suppressWarnings(as.numeric(df$`Old CT`))) &
+            is.finite(suppressWarnings(as.numeric(df$CT))), ]
+
+df2$Gene <- toupper(df2$Gene)
+df2$Gene <- factor(df2$Gene, levels = c("TDH", "TLH"))
+
+# Convert to numeric
+df2$`Old CT` <- as.numeric(df2$`Old CT`)
+df2$CT <- as.numeric(df2$CT)
+
+# Statistical tests for each gene
+gene_list <- unique(df2$Gene)
+
+for (gene in gene_list) {
+  gene_data <- df2[df2$Gene == gene, ]
+  
+# Spearman correlation
+  spearman_result <- suppressWarnings(cor.test(gene_data$`Old CT`, gene_data$CT, method = "spearman", exact = FALSE))
+  correlation_rho <- unname(spearman_result$estimate)
+  p_value <- spearman_result$p.value
+  sample_count <- nrow(gene_data)
+  
+  cat(sprintf("%s: Spearman ρ = %.3f, p = %.2e, n = %d\n", gene, correlation_rho, p_value, sample_count))
+}
+
+# Plot
+p <- ggplot(df2, aes(x = `Old CT`, y = CT)) +
+  geom_point(alpha = 0.6, size = 1.8, color = "#2c5282") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey40", linewidth = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, color = "#e53e3e", fill = "#fed7d7", 
+              linewidth = 1.1, alpha = 0.2) +
+  facet_wrap(~ Gene, nrow = 1, scales = "free") +
+  labs(x = "Old CT", y = "CT (new qPCR)") +
+  theme_classic(base_size = 12) +
+  theme(
+    panel.grid.major = element_line(color = "grey92", size = 0.3),
+    axis.text = element_text(color = "grey20"),
+    axis.title = element_text(color = "grey20", face = "bold"),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold")
+  )
+
+p

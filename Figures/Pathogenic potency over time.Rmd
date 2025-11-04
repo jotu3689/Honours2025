@@ -1,0 +1,108 @@
+---
+title: "Untitled"
+author: "Joshua Tu"
+date: "2025-11-03"
+output: html_document
+---
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+
+# Load data
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+dat <- read_excel(path, sheet = "All Data")
+
+# Parse dates and clean data
+dat$date <- as.Date(dat$Date, format = "%d.%m.%Y")
+
+# Standardize gene/estuary names & colors
+dat$Gene <- tolower(dat$Gene)
+dat$Estuary <- dat$Location
+est_order <- c("Merimbula", "Clyde", "Port", "Wallis", "Manning")
+dat$Estuary <- factor(dat$Estuary, levels = est_order)
+
+# Colors for pathogenic genes
+cols <- c(tdh = "#2ca02c", trh = "#1f77b4")
+
+# Log transform gene copies for pathogenic genes
+dat$log10_gene_copies <- ifelse(is.finite(dat$`Gene Copies`) & dat$`Gene Copies` > 0, 
+                                log10(dat$`Gene Copies`), NA_real_)
+
+# Calculate weekly pathogenic burden (mean gene copies when detected)
+weekly_pathogenic_burden <- dat %>%
+  filter(Gene %in% c("tdh", "trh"),
+         !is.na(date), !is.na(Estuary), !is.na(log10_gene_copies)) %>%
+  mutate(week = floor_date(date, unit = "week", week_start = 1)) %>%
+  group_by(Estuary, Gene, week) %>%
+  summarise(
+    pathogenic_burden = mean(log10_gene_copies, na.rm = TRUE),  # Mean burden when detected
+    .groups = "drop"
+  )
+
+# Create combined pathogenic burden (TDH + TRH)
+combined_burden <- weekly_pathogenic_burden %>%
+  group_by(Estuary, week) %>%
+  summarise(
+    total_burden = sum(pathogenic_burden, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(total_burden > 0)  # Only weeks with actual pathogenic detection
+
+# Weekly temperature data
+weekly_temp <- dat %>%
+  filter(!is.na(date), !is.na(Estuary)) %>%
+  mutate(week = floor_date(date, unit = "week", week_start = 1),
+         Temp = suppressWarnings(as.numeric(Temp))) %>%
+  group_by(Estuary, week) %>%
+  summarise(temp_c = mean(Temp, na.rm = TRUE), .groups = "drop")
+
+# Rescale temperature
+t_min <- min(weekly_temp$temp_c, na.rm = TRUE)
+t_max <- max(weekly_temp$temp_c, na.rm = TRUE)
+weekly_temp <- weekly_temp %>%
+  mutate(temp_scaled = (temp_c - t_min) / (t_max - t_min) * 6 - 1)
+
+# Create pathogenic potency plot
+p <- ggplot() +
+  # Show combined pathogenic burden as area/ribbon
+  geom_col(data = combined_burden,
+           aes(x = week, y = total_burden),
+           fill = "darkred", alpha = 0.6, width = 10) +
+  # Show individual gene contributions
+  geom_line(data = weekly_pathogenic_burden,
+            aes(x = week, y = pathogenic_burden, color = Gene, group = Gene),
+            linewidth = 1.0, alpha = 0.9) +
+  geom_point(data = weekly_pathogenic_burden,
+             aes(x = week, y = pathogenic_burden, fill = Gene),
+             shape = 21, size = 2.5, alpha = 0.9, stroke = 0.5) +
+  scale_color_manual(values = cols, name = "Gene") +
+  scale_fill_manual(values = cols, name = "Gene") +
+  # Temperature overlay
+  geom_line(data = weekly_temp,
+            aes(week, temp_scaled, group = 1),
+            colour = "black", linewidth = 0.7, linetype = "22") +
+  scale_y_continuous(
+    name = expression(Log[10]*" pathogenic gene copies (burden)"),
+    limits = c(-1, 5),
+    sec.axis = sec_axis(~ (. + 1) / 6 * (t_max - t_min) + t_min,
+                        name = "Mean water temp (°C)")
+  ) +
+  scale_x_date(date_breaks = "2 months",
+               date_minor_breaks = "1 month",
+               date_labels = "%b-%y",
+               expand = expansion(mult = c(0.01, 0.02))) +
+  facet_wrap(~ Estuary, ncol = 1) +
+  labs(x = "Week starting") +
+  theme_classic(base_size = 12) +
+  theme(
+    legend.position = "top",
+    legend.title = element_text(face = "bold"),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    panel.spacing.y = unit(6, "pt")
+  )
+
+p

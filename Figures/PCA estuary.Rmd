@@ -1,0 +1,51 @@
+---
+title: "pca estuary"
+author: "Joshua Tu"
+date: "2025-10-23"
+output: html_document
+---
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+
+# Load and prepare data
+df <- read_excel("/Users/joshuatu/Desktop/Honours/All Data.xlsx", sheet = "All Data")
+
+env_pca <- df %>%
+  transmute(
+    temp = as.numeric(Temp), 
+    sal = as.numeric(Salinity),
+    estuary = Location
+  ) %>%
+  filter(is.finite(temp), is.finite(sal))
+
+# PCA
+pc <- prcomp(env_pca[, c("temp", "sal")], scale. = TRUE)
+ve <- round(100 * summary(pc)$importance[2, 1:2], 1)
+
+scores <- as.data.frame(pc$x[, 1:2])
+scores$estuary <- env_pca$estuary
+
+# Match colors from prevalence plot
+estuary_colors <- c(
+  "Merimbula" = "#F8766D",  
+  "Clyde" = "#A3A500",      
+  "Wallis" = "#00BF7D",     
+  "Port" = "#00B0F6",       
+  "Manning" = "#E76BF3"     
+)
+
+# PCA plot with matching colors
+p <- ggplot(scores, aes(PC1, PC2, color = estuary)) +
+  geom_point(alpha = 0.8, size = 2.5) +
+  scale_color_manual(values = estuary_colors) +
+  labs(
+    x = paste0("PC1 (", ve[1], "%)"), 
+    y = paste0("PC2 (", ve[2], "%)"),
+    color = "Estuary"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(legend.position = "right")
+
+p

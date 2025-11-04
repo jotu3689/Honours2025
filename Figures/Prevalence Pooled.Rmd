@@ -1,0 +1,158 @@
+---
+title: "Prevalence Pooled"
+author: "Joshua Tu"
+date: "2025-10-21"
+output: html_document
+---
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+# Load data
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+df <- read_excel(path, sheet = "All Data")
+
+# Parameters
+CT_THRESHOLD <- 40
+GENES <- c("TLH", "TDH", "TRH")
+COLS <- c(TLH = "#d62728", TDH = "#2ca02c", TRH = "#1f77b4", `Pathogenic (any)` = "#C77CFF")
+
+# Helper function
+binom_ci <- function(k, n) {
+  ci <- prop.test(k, n)$conf.int
+  tibble(p = k/n, lo = ci[1], hi = ci[2])
+}
+
+# NEW ASSAY
+new_df <- df %>%
+  filter(toupper(Gene) %in% GENES) %>%
+  transmute(
+    Sample = as.character(Sample),
+    Gene = toupper(Gene),
+    CT = suppressWarnings(as.numeric(CT)),
+    pos = is.finite(CT) & CT <= CT_THRESHOLD
+  )
+
+# Per-gene prevalence
+new_gene <- new_df %>%
+  group_by(Gene) %>% 
+  summarise(n = n(), k = sum(pos), .groups = "drop") %>%
+  rowwise() %>% 
+  mutate(binom_ci(k, n)) %>% 
+  ungroup() %>%
+  transmute(target = Gene, p, lo, hi)
+
+# Pathogenic prevalence
+new_path <- new_df %>%
+  filter(Gene %in% c("TDH", "TRH")) %>%
+  group_by(Sample) %>% 
+  summarise(any_pos = any(pos), .groups = "drop") %>%
+  summarise(n = n(), k = sum(any_pos), .groups = "drop") %>%
+  rowwise() %>% 
+  mutate(binom_ci(k, n)) %>% 
+  ungroup() %>%
+  transmute(target = "Pathogenic (any)", p, lo, hi)
+
+new_prev <- bind_rows(new_gene, new_path) %>%
+  mutate(target = factor(target, levels = c("TLH", "TDH", "TRH", "Pathogenic (any)")))
+
+# LEGACY ASSAY
+legacy_df <- df %>%
+  filter(toupper(Gene) %in% GENES) %>%
+  transmute(
+    Sample = paste(Date, Location),
+    Gene = toupper(Gene),
+    CT = suppressWarnings(as.numeric(`Old CT`)),
+    pos = is.finite(CT) & CT <= CT_THRESHOLD
+  )
+
+legacy_gene <- legacy_df %>%
+  group_by(Gene) %>%
+  summarise(n = n(), k = sum(pos), .groups = "drop") %>%
+  rowwise() %>% 
+  mutate(binom_ci(k, n)) %>% 
+  ungroup() %>%
+  transmute(target = Gene, p, lo, hi)
+
+legacy_path <- legacy_gene %>%
+  filter(target == "TDH") %>%
+  mutate(target = "Pathogenic (any)")
+
+legacy_prev <- bind_rows(legacy_gene, legacy_path) %>%
+  mutate(target = factor(target, levels = c("TLH", "TDH", "TRH", "Pathogenic (any)")))
+
+# Plot
+plot_data <- bind_rows(
+  new_prev %>% mutate(Assay = "(A) New Assay"),
+  legacy_prev %>% mutate(Assay = "(B) Legacy Assay")
+) %>%
+  mutate(
+    target = factor(target, levels = c("TLH", "TDH", "TRH", "Pathogenic (any)")),
+    Assay = factor(Assay, levels = c("(A) New Assay", "(B) Legacy Assay")),
+    draw_ci = !(Assay == "(B) Legacy Assay" & target == "TRH")
+  )
+
+p <- ggplot(plot_data, aes(target, p, fill = target)) +
+  geom_col(width = 0.72, color = "black") +  # Removed alpha = 0.8
+  geom_errorbar(
+    data = subset(plot_data, draw_ci),
+    aes(ymin = lo, ymax = hi),
+    width = 0.16, linewidth = 0.8
+  ) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1)) +
+  scale_fill_manual(values = COLS, guide = "none") +
+  labs(x = NULL, y = "% positive (95% CI)") +
+  facet_wrap(~ Assay, nrow = 1) +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text = element_text(color = "grey20"),
+    axis.title = element_text(color = "grey20", face = "bold"),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold")
+  )  # Removed panel.grid.major line
+
+p
+
+# CHI-SQUARED TESTS
+new_counts <- new_df %>% 
+  group_by(Gene) %>% 
+  summarise(n = n(), k = sum(pos), .groups = "drop") %>%
+  rename(target = Gene, n_new = n, k_new = k) %>%
+  bind_rows(
+    new_df %>% 
+      filter(Gene %in% c("TDH", "TRH")) %>% 
+      group_by(Sample) %>% 
+      summarise(any_pos = any(pos), .groups = "drop") %>%
+      summarise(target = "Pathogenic (any)", n_new = n(), k_new = sum(any_pos))
+  )
+
+legacy_counts <- legacy_df %>% 
+  group_by(Gene) %>% 
+  summarise(n = n(), k = sum(pos), .groups = "drop") %>%
+  rename(target = Gene, n_legacy = n, k_legacy = k) %>%
+  bind_rows(
+    legacy_df %>% 
+      filter(Gene %in% c("TDH", "TRH")) %>%
+      group_by(Sample) %>% 
+      summarise(any_pos = any(pos), .groups = "drop") %>%
+      summarise(target = "Pathogenic (any)", n_legacy = n(), k_legacy = sum(any_pos))
+  )
+
+comparison_data <- left_join(new_counts, legacy_counts, by = "target")
+
+for(i in 1:nrow(comparison_data)) {
+  row <- comparison_data[i, ]
+  chi_table <- matrix(
+    c(row$k_new, row$n_new - row$k_new, 
+      row$k_legacy, row$n_legacy - row$k_legacy), 
+    nrow = 2, byrow = TRUE
+  )
+  
+  chi_result <- chisq.test(chi_table)
+  cat(sprintf("%s: New %.1f%% (%d/%d) vs Legacy %.1f%% (%d/%d), X² = %.2f, p = %.2e\n",
+              row$target, 
+              100*row$k_new/row$n_new, row$k_new, row$n_new,
+              100*row$k_legacy/row$n_legacy, row$k_legacy, row$n_legacy,
+              chi_result$statistic, chi_result$p.value))
+}

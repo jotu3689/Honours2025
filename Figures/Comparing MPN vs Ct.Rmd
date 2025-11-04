@@ -1,0 +1,48 @@
+---
+title: "Comparing MPN vs CT"
+author: "Joshua Tu"
+date: "2025-10-07"
+output: html_document
+---
+
+library(readxl)
+library(ggplot2)
+
+# Load data
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+df <- read_excel(path, sheet = "All Data")
+
+# Clean MPN (remove < 3.0 values)
+mpn_raw <- as.character(df$`Old MPN`)
+mpn_raw <- gsub(",", "", mpn_raw)
+mpn_num <- suppressWarnings(as.numeric(gsub("[^0-9.]", "", mpn_raw)))
+df$log10_mpn <- ifelse(is.finite(mpn_num) & mpn_num > 0, log10(mpn_num), NA_real_)
+
+# TLH subset
+df_tlh <- subset(df, tolower(Gene) == "tlh" & is.finite(CT) & is.finite(log10_mpn))
+
+# Spearman correlation
+spearman_result <- cor.test(df_tlh$CT, df_tlh$log10_mpn, method = "spearman", exact = FALSE)
+correlation_rho <- unname(spearman_result$estimate)
+p_value <- spearman_result$p.value
+sample_count <- nrow(df_tlh)
+
+cat(sprintf("Spearman ρ = %.3f, p = %.2e, n = %d\n", correlation_rho, p_value, sample_count))
+
+# plot
+p <- ggplot(df_tlh, aes(x = CT, y = log10_mpn)) +
+  geom_point(alpha = 0.6, size = 1.8, color = "#2c5282") +
+  geom_smooth(method = "loess", se = TRUE, color = "#e53e3e", fill = "#fed7d7", 
+              linewidth = 1.1, alpha = 0.2) +
+  scale_x_reverse(breaks = seq(20, 40, 5)) +
+  scale_y_continuous(breaks = seq(0, 4, 1)) +
+  labs(x = "CT", 
+       y = expression(log[10]*"(MPN)")) +
+  theme_classic(base_size = 12) +
+  theme(
+    panel.grid.major = element_line(color = "grey92", size = 0.3),
+    axis.text = element_text(color = "grey20"),
+    axis.title = element_text(color = "grey20", face = "bold")
+  )
+
+p

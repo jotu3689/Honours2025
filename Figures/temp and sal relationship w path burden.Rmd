@@ -1,0 +1,114 @@
+---
+title: "temp and sal relationship w path burden"
+author: "Joshua Tu"
+date: "2025-10-08"
+output: html_document
+---
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(splines)
+library(scales)
+
+# Load data
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+df <- read_excel(path, sheet = "All Data")
+
+# Settings
+ct_threshold <- 40
+pathogen_colors <- c(TDH = "#2ca02c", TRH = "#1f77b4")
+
+# Prepare pathogenic gene copy data
+pathogen_copy_data <- df %>%
+  transmute(
+    Sample = Sample,
+    Gene = tolower(Gene),
+    CT = suppressWarnings(as.numeric(CT)),
+    temp_c = suppressWarnings(as.numeric(Temp)),
+    sal_psu = suppressWarnings(as.numeric(Salinity)),
+    gene_copies = suppressWarnings(as.numeric(gsub(",", "", `Gene Copies`)))
+  ) %>%
+  filter(Gene %in% c("tdh", "trh")) %>%
+  mutate(
+    pos = is.finite(CT) & CT <= ct_threshold,
+    log10_copies = ifelse(is.finite(gene_copies) & gene_copies > 0, log10(gene_copies), NA_real_)
+  ) %>%
+  filter(pos, is.finite(log10_copies), is.finite(temp_c), is.finite(sal_psu)) %>%
+  mutate(Gene = toupper(Gene))
+
+# Statistical analysis for temperature
+for(gene in c("TDH", "TRH")) {
+  gene_data <- pathogen_copy_data[pathogen_copy_data$Gene == gene, ]
+  temp_correlation <- cor.test(gene_data$temp_c, gene_data$log10_copies, method = "spearman", exact = FALSE)
+  correlation_rho <- unname(temp_correlation$estimate)
+  p_value <- temp_correlation$p.value
+  sample_count <- nrow(gene_data)
+  
+  cat(sprintf("%s vs Temperature: Spearman ρ = %.3f, p = %.2e, n = %d\n", 
+              gene, correlation_rho, p_value, sample_count))
+}
+
+# Statistical analysis for salinity
+for(gene in c("TDH", "TRH")) {
+  gene_data <- pathogen_copy_data[pathogen_copy_data$Gene == gene, ]
+  sal_correlation <- cor.test(gene_data$sal_psu, gene_data$log10_copies, method = "spearman", exact = FALSE)
+  correlation_rho <- unname(sal_correlation$estimate)
+  p_value <- sal_correlation$p.value
+  sample_count <- nrow(gene_data)
+  
+  cat(sprintf("%s vs Salinity: Spearman ρ = %.3f, p = %.2e, n = %d\n", 
+              gene, correlation_rho, p_value, sample_count))
+}
+
+# Temperature plot
+temp_plot <- ggplot(pathogen_copy_data, aes(temp_c, log10_copies, colour = Gene)) +
+  geom_point(alpha = 0.5, size = 1.8) +
+  geom_smooth(
+    aes(temp_c, log10_copies, colour = Gene, fill = Gene),
+    method = "lm", formula = y ~ ns(x, 3), se = TRUE, linewidth = 1.2, alpha = 0.2
+  ) +
+  scale_colour_manual(values = pathogen_colors, name = "Gene") +
+  scale_fill_manual(values = pathogen_colors, guide = "none") +
+  labs(x = "Water temperature (°C)", y = expression(Log[10]~"gene copies per pool")) +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text = element_text(color = "grey20"),
+    axis.title = element_text(color = "grey20", face = "bold")
+  )
+
+# Salinity plot
+salinity_plot <- ggplot(pathogen_copy_data, aes(sal_psu, log10_copies, colour = Gene)) +
+  geom_point(alpha = 0.5, size = 1.8) +
+  geom_smooth(
+    aes(sal_psu, log10_copies, colour = Gene, fill = Gene),
+    method = "lm", formula = y ~ ns(x, 3), se = TRUE, linewidth = 1.2, alpha = 0.2
+  ) +
+  scale_colour_manual(values = pathogen_colors, name = "Gene") +
+  scale_fill_manual(values = pathogen_colors, guide = "none") +
+  labs(x = "Salinity (ppt)", y = expression(Log[10]~"gene copies per pool")) +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text = element_text(color = "grey20"),
+    axis.title = element_text(color = "grey20", face = "bold")
+  )
+
+# Create legend
+legend_plot <- cowplot::get_legend(
+  ggplot(pathogen_copy_data, aes(temp_c, log10_copies, colour = Gene)) +
+    geom_point() +
+    scale_colour_manual(values = pathogen_colors, name = "Gene") +
+    theme_void() + theme(legend.position = "right", legend.title = element_text(face = "bold"))
+)
+
+# Combine plots
+pathogen_environmental_plot <- cowplot::plot_grid(
+  cowplot::plot_grid(
+    temp_plot + theme(legend.position = "none"),
+    salinity_plot + theme(legend.position = "none"),
+    ncol = 1, labels = c("(A)", "(B)"), label_size = 14, align = "v"
+  ),
+  legend_plot, ncol = 2, rel_widths = c(1, 0.18)
+)
+
+pathogen_environmental_plot

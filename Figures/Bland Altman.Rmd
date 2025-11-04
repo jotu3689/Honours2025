@@ -1,0 +1,72 @@
+---
+title: "Bland Altman"
+author: "Joshua Tu"
+date: "2025-10-07"
+output: html_document
+---
+
+library(readxl)
+library(ggplot2)
+
+# Load data
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+df <- read_excel(path, sheet = "All Data")
+
+# Clean and prepare data
+df$`Old CT` <- suppressWarnings(as.numeric(df$`Old CT`))
+df$CT <- suppressWarnings(as.numeric(df$CT))
+df$Gene_lc <- tolower(df$Gene)
+
+# Keep complete pairs for TDH/TLH
+keep <- df$Gene_lc %in% c("tdh", "tlh") & is.finite(df$`Old CT`) & is.finite(df$CT)
+dat <- df[keep, c("Gene_lc", "Old CT", "CT")]
+dat$Gene <- toupper(dat$Gene_lc)
+
+# Bland-Altman variables
+dat$mean_ct <- (dat$CT + dat$`Old CT`) / 2
+dat$diff <- dat$CT - dat$`Old CT`
+
+# Order panels
+dat$Gene <- factor(dat$Gene, levels = c("TDH", "TLH"))
+
+# Calculate Bland-Altman statistics per gene
+bland_altman_stats <- by(dat, dat$Gene, function(gene_data) {
+  mean_diff <- mean(gene_data$diff, na.rm = TRUE)
+  sd_diff <- sd(gene_data$diff, na.rm = TRUE)
+  data.frame(Gene = unique(gene_data$Gene),
+             mean_diff = mean_diff,
+             loa_low = mean_diff - 1.96 * sd_diff,
+             loa_high = mean_diff + 1.96 * sd_diff,
+             n = sum(is.finite(gene_data$diff)))
+})
+
+bland_altman_stats <- do.call(rbind, bland_altman_stats)
+
+for (i in 1:nrow(bland_altman_stats)) {
+  with(bland_altman_stats[i, ], cat(sprintf(
+    "%s: mean ΔCt = %.2f, LOA = [%.2f, %.2f], n = %d\n",
+    Gene, mean_diff, loa_low, loa_high, n)))
+}
+
+# Plot
+p <- ggplot(dat, aes(x = mean_ct, y = diff)) +
+  geom_point(alpha = 0.6, size = 1.8, color = "#2c5282") +
+  geom_hline(data = bland_altman_stats, aes(yintercept = mean_diff), 
+             color = "#e53e3e", linewidth = 1.0) +
+  geom_hline(data = bland_altman_stats, aes(yintercept = loa_low), 
+             color = "#e53e3e", linetype = "dashed", linewidth = 0.8) +
+  geom_hline(data = bland_altman_stats, aes(yintercept = loa_high), 
+             color = "#e53e3e", linetype = "dashed", linewidth = 0.8) +
+  facet_wrap(~ Gene, nrow = 1, scales = "free_x") +
+  labs(x = "Mean Ct (old & new)",
+       y = expression(Delta * "Ct (new - old)")) +
+  theme_classic(base_size = 12) +
+  theme(
+    panel.grid.major = element_line(color = "grey92", size = 0.3),
+    axis.text = element_text(color = "grey20"),
+    axis.title = element_text(color = "grey20", face = "bold"),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold")
+  )
+
+p

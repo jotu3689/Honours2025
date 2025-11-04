@@ -1,0 +1,94 @@
+---
+title: "weekly detection by estuary"
+author: "Joshua Tu"
+date: "2025-10-08"
+output: html_document
+---
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+
+path <- "/Users/joshuatu/Desktop/Honours/All Data.xlsx"
+dat  <- read_excel(path, sheet = "All Data")
+
+# Parse dates (your file is dd.mm.yyyy)
+dat$date <- as.Date(dat$Date, format = "%d.%m.%Y")
+
+# Standardize gene/estuary names & colours
+dat$Gene    <- toupper(tolower(dat$Gene))
+dat$Estuary <- dat$Location   # rename for clarity
+est_order   <- c("Merimbula","Clyde","Port","Wallis","Manning")
+dat$Estuary <- factor(dat$Estuary, levels = est_order)
+
+cols <- c(TLH = "#d62728", TDH = "#2ca02c", TRH = "#1f77b4")
+
+# pos check
+has_present <- "Present" %in% names(dat)
+if (has_present) {
+  dat$pos <- as.logical(dat$Present)
+} else {
+  dat$pos <- is.finite(suppressWarnings(as.numeric(dat$CT))) &
+             as.numeric(dat$CT) <= 40
+}
+
+# weekly % pos by gene
+weekly_est <- dat %>%
+  filter(Gene %in% c("TLH","TDH","TRH"),
+         !is.na(date), !is.na(Estuary)) %>%
+  mutate(week = floor_date(date, unit = "week", week_start = 1)) %>%
+  group_by(Estuary, Gene, week) %>%
+  summarise(p = mean(pos, na.rm = TRUE), .groups = "drop")  # proportion
+
+# weekly mean temp
+weekly_temp <- dat %>%
+  filter(!is.na(date), !is.na(Estuary)) %>%
+  mutate(week = floor_date(date, unit = "week", week_start = 1),
+         Temp = suppressWarnings(as.numeric(Temp))) %>%
+  group_by(Estuary, week) %>%
+  summarise(temp_c = mean(Temp, na.rm = TRUE), .groups = "drop")
+  
+# rescape temp 
+t_min <- min(weekly_temp$temp_c, na.rm = TRUE)
+t_max <- max(weekly_temp$temp_c, na.rm = TRUE)
+weekly_temp <- weekly_temp %>%
+  mutate(temp_scaled = (temp_c - t_min) / (t_max - t_min))
+  
+# Plot
+p <- ggplot() +
+  geom_line(data = weekly_est,
+            aes(week, p, colour = Gene, group = Gene),
+            linewidth = 0.6, lineend = "round") +
+  geom_point(data = weekly_est,
+             aes(week, p, colour = Gene),
+             size = 1.3, alpha = 0.9) +
+  scale_color_manual(values = cols, name = "Gene") +
+  # Temperature (rescaled) with secondary axis
+  geom_line(data = weekly_temp,
+            aes(week, temp_scaled, group = 1),
+            colour = "black", linewidth = 0.7, linetype = "22") +
+  scale_y_continuous(
+    name = "% Positive",
+    labels = percent_format(accuracy = 1),
+    limits = c(0, 1),
+    sec.axis = sec_axis(~ . * (t_max - t_min) + t_min,
+                        name = "Mean water temp (°C)")
+  ) +
+  scale_x_date(date_breaks = "2 months",
+               date_minor_breaks = "1 month",
+               date_labels = "%b %y",
+               expand = expansion(mult = c(0.01, 0.02))) +
+  facet_wrap(~ Estuary, ncol = 1) +
+  labs(x = "Week starting") +
+  theme_classic(base_size = 12) +
+  theme(
+    legend.position = "top",
+    legend.title = element_text(face = "bold"),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    panel.spacing.y = unit(6, "pt")
+  )
+  
+p
